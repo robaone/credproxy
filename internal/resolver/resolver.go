@@ -17,7 +17,7 @@ import (
 )
 
 const defaultSentinel = "CREDPROXY_TOKEN"
-const credentialCacheTTL = 5 * time.Minute
+const prefetchTimeout = 30 * time.Second
 const maxBodySize = 10 * 1024 * 1024
 
 type cacheEntry struct {
@@ -31,6 +31,7 @@ type Resolver struct {
 	cache map[string]cacheEntry
 	mu    sync.Mutex
 	re    *regexp.Regexp
+	ttl   time.Duration
 }
 
 func New(cfg *config.Config, reg *providers.Registry) *Resolver {
@@ -38,6 +39,7 @@ func New(cfg *config.Config, reg *providers.Registry) *Resolver {
 		cfg:   cfg,
 		reg:   reg,
 		cache: make(map[string]cacheEntry),
+		ttl:   config.DefaultCacheTTL,
 	}
 	r.SetSentinel(defaultSentinel)
 	return r
@@ -47,6 +49,30 @@ func New(cfg *config.Config, reg *providers.Registry) *Resolver {
 // for the host; the bare sentinel selects the host's default credential.
 func (r *Resolver) SetSentinel(s string) {
 	r.re = regexp.MustCompile(regexp.QuoteMeta(s) + `(?::([A-Za-z0-9_-]+))?`)
+}
+
+// SetCacheTTL sets how long resolved credentials are cached.
+// config.SessionCacheTTL caches them for the life of the resolver.
+func (r *Resolver) SetCacheTTL(d time.Duration) {
+	r.mu.Lock()
+	r.ttl = d
+	r.mu.Unlock()
+}
+
+// Prefetch resolves every configured host credential, default and named, and
+// caches it, so provider prompts (e.g. 1Password biometrics) happen once at
+// startup instead of mid-run. Lookups are sequential so only one prompt is
+// pending at a time. The first failure aborts.
+func (r *Resolver) Prefetch(ctx context.Context) error {
+	for _, uri := range r.cfg.AllCredentialURIs() {
+		callCtx, cancel := context.WithTimeout(ctx, prefetchTimeout)
+		_, err := r.resolveURI(callCtx, uri)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("prefetching %s: %w", uri, err)
+		}
+	}
+	return nil
 }
 
 // Resolve looks up an arbitrary credential URI through the provider registry.
@@ -91,7 +117,7 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 
 func (r *Resolver) resolveURI(ctx context.Context, uri string) (string, error) {
 	r.mu.Lock()
-	if entry, ok := r.cache[uri]; ok && time.Now().Before(entry.expires) {
+	if entry, ok := r.cache[uri]; ok && (r.ttl < 0 || time.Now().Before(entry.expires)) {
 		r.mu.Unlock()
 		return entry.value, nil
 	}
@@ -103,7 +129,7 @@ func (r *Resolver) resolveURI(ctx context.Context, uri string) (string, error) {
 	}
 
 	r.mu.Lock()
-	r.cache[uri] = cacheEntry{value: val, expires: time.Now().Add(credentialCacheTTL)}
+	r.cache[uri] = cacheEntry{value: val, expires: time.Now().Add(r.ttl)}
 	r.mu.Unlock()
 	return val, nil
 }

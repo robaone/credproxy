@@ -26,6 +26,7 @@ func main() {
 	profile := flag.String("profile", "", "config profile to activate")
 	sentinel := flag.String("sentinel", "CREDPROXY_TOKEN", "sentinel string to substitute")
 	openProxy := flag.Bool("open-proxy", false, "allow all hosts (not recommended)")
+	prefetch := flag.Bool("prefetch", false, "resolve all configured host credentials at startup (best with cache_ttl = \"session\")")
 	version := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -90,6 +91,13 @@ func main() {
 	res := resolver.New(cfg, reg)
 	res.SetSentinel(*sentinel)
 
+	ttl, err := cfg.CacheTTLDuration()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
+		os.Exit(1)
+	}
+	res.SetCacheTTL(ttl)
+
 	if err := cfg.ResolveEnv(context.Background(), res); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve env credentials: %v\n", err)
 		os.Exit(1)
@@ -98,6 +106,16 @@ func main() {
 	if err := cfg.ResolveDatabasePasswords(context.Background(), res); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to resolve database credentials: %v\n", err)
 		os.Exit(1)
+	}
+
+	if *prefetch {
+		if ttl != config.SessionCacheTTL {
+			fmt.Fprintf(os.Stderr, "warning: --prefetch without cache_ttl = \"session\": prefetched credentials expire after %s and will be re-read mid-run\n", ttl)
+		}
+		if err := res.Prefetch(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to prefetch credentials: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// runWrap returns the child's exit code rather than exiting itself: the

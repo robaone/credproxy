@@ -43,6 +43,24 @@ agent-token = "op://Work/trello-agent-token/value"     # CREDPROXY_TOKEN:agent-t
 
 Names are `[A-Za-z0-9_-]+`. A reference to a name that isn't configured for that host fails the request with a 502 instead of sending the sentinel upstream. Credentials are resolved on first use, so an unused named credential never triggers a 1Password prompt.
 
+### Credential cache and prefetch
+
+Resolved credentials are cached in the proxy's memory, for 5 minutes by default. After that the next request reads the secret again, which can trigger a fresh 1Password prompt. For a long-running wrapped process such as a daemon, keep them for the life of the proxy instead:
+
+```toml
+cache_ttl = "session"   # or a duration such as "30m"; default is "5m"
+```
+
+With `session`, each credential is read once on first use and never refreshed, so a rotated secret is picked up only after you restart credproxy.
+
+To move the prompts to startup, add `--prefetch`:
+
+```
+credproxy --prefetch ./start_daemon.sh
+```
+
+credproxy then resolves every configured host credential, default and named, one at a time before starting the child, and exits with an error if any fails. Prefetch warns if `cache_ttl` is not `session`, because prefetched values would expire mid-run. Database passwords and `[env]` values are already resolved at startup.
+
 ## Configuration
 
 ### Config files

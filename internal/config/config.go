@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -53,11 +54,70 @@ type DatabaseConfig struct {
 }
 
 type Config struct {
+	// CacheTTL is how long a resolved credential stays cached: a Go duration
+	// ("10m"), or "session" to keep it for the life of the proxy. Empty means
+	// DefaultCacheTTL.
+	CacheTTL  string                    `toml:"cache_ttl"`
 	Env       map[string]string         `toml:"env"`
 	Hosts     map[string]HostConfig     `toml:"hosts"`
 	Databases map[string]DatabaseConfig `toml:"databases"`
 	Profiles  map[string]ProfileConfig  `toml:"profiles"`
 	hostsSet  map[string]bool
+}
+
+// DefaultCacheTTL applies when cache_ttl is not set.
+const DefaultCacheTTL = 5 * time.Minute
+
+// SessionCacheTTL is the value CacheTTLDuration returns for cache_ttl = "session".
+const SessionCacheTTL time.Duration = -1
+
+// CacheTTLDuration parses cache_ttl. It returns SessionCacheTTL for "session".
+func (c *Config) CacheTTLDuration() (time.Duration, error) {
+	switch c.CacheTTL {
+	case "":
+		return DefaultCacheTTL, nil
+	case "session":
+		return SessionCacheTTL, nil
+	}
+	d, err := time.ParseDuration(c.CacheTTL)
+	if err != nil {
+		return 0, fmt.Errorf("cache_ttl %q: want a duration like \"10m\" or \"session\": %w", c.CacheTTL, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("cache_ttl %q must be positive", c.CacheTTL)
+	}
+	return d, nil
+}
+
+// AllCredentialURIs returns every distinct credential URI configured on any
+// host, default and named, in stable order.
+func (c *Config) AllCredentialURIs() []string {
+	seen := make(map[string]bool)
+	var uris []string
+	add := func(uri string) {
+		if uri != "" && !seen[uri] {
+			seen[uri] = true
+			uris = append(uris, uri)
+		}
+	}
+	hosts := make([]string, 0, len(c.Hosts))
+	for h := range c.Hosts {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	for _, h := range hosts {
+		hc := c.Hosts[h]
+		add(hc.Credential)
+		names := make([]string, 0, len(hc.Credentials))
+		for n := range hc.Credentials {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			add(hc.Credentials[n])
+		}
+	}
+	return uris
 }
 
 func Load(path string) (*Config, error) {
@@ -106,11 +166,15 @@ func (c *Config) SetDefaults() {
 
 func (c *Config) Merge(overlay *Config) *Config {
 	merged := &Config{
+		CacheTTL:  c.CacheTTL,
 		Env:       make(map[string]string, len(c.Env)+len(overlay.Env)),
 		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(overlay.Hosts)),
 		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(overlay.Databases)),
 		Profiles:  make(map[string]ProfileConfig, len(c.Profiles)+len(overlay.Profiles)),
 		hostsSet:  make(map[string]bool, len(c.Hosts)+len(overlay.Hosts)),
+	}
+	if overlay.CacheTTL != "" {
+		merged.CacheTTL = overlay.CacheTTL
 	}
 	for k, v := range c.Env {
 		merged.Env[k] = v
@@ -297,6 +361,7 @@ func (c *Config) ApplyProfile(name string) (*Config, error) {
 		return nil, fmt.Errorf("profile %q not found; available: %v", name, c.ProfileNames())
 	}
 	result := &Config{
+		CacheTTL:  c.CacheTTL,
 		Env:       make(map[string]string, len(c.Env)+len(profile.Env)),
 		Hosts:     make(map[string]HostConfig, len(c.Hosts)+len(profile.Hosts)),
 		Databases: make(map[string]DatabaseConfig, len(c.Databases)+len(profile.Databases)),
