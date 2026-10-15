@@ -30,6 +30,19 @@ credproxy is the parent process. It loads config, starts the proxy, configures t
 
 The sentinel is substituted in headers, query strings, and request bodies. The agent doesn't know which credential goes where — it uses `CREDPROXY_TOKEN` for everything, and credproxy resolves the right secret based on the target host.
 
+When one host needs more than one secret in a session, declare named credentials alongside the default and reference them with `CREDPROXY_TOKEN:<name>`:
+
+```toml
+[hosts."api.trello.com"]
+credential = "op://Personal/trello-key/value"          # bare CREDPROXY_TOKEN
+
+[hosts."api.trello.com".credentials]
+token       = "op://Personal/trello-token/value"       # CREDPROXY_TOKEN:token
+agent-token = "op://Work/trello-agent-token/value"     # CREDPROXY_TOKEN:agent-token
+```
+
+Names are `[A-Za-z0-9_-]+`. A reference to a name that isn't configured for that host fails the request with a 502 instead of sending the sentinel upstream. Credentials are resolved on first use, so an unused named credential never triggers a 1Password prompt.
+
 ## Configuration
 
 ### Config files

@@ -28,7 +28,8 @@ type EnvResolver interface {
 const envResolveTimeout = 30 * time.Second
 
 type HostConfig struct {
-	Credential string `toml:"credential"`
+	Credential  string            `toml:"credential"`
+	Credentials map[string]string `toml:"credentials"`
 }
 
 type ProfileConfig struct {
@@ -183,6 +184,23 @@ func (c *Config) GetCredentialURI(host string) (string, bool) {
 		return "", false
 	}
 	return hc.Credential, true
+}
+
+// CredentialURIs maps each sentinel name configured for host to its credential URI.
+// The bare sentinel (no name) is keyed by "" and comes from the host's default credential.
+func (c *Config) CredentialURIs(host string) (map[string]string, bool) {
+	hc, ok := c.Hosts[host]
+	if !ok {
+		return nil, false
+	}
+	uris := make(map[string]string, len(hc.Credentials)+1)
+	for name, uri := range hc.Credentials {
+		uris[name] = uri
+	}
+	if hc.Credential != "" {
+		uris[""] = hc.Credential
+	}
+	return uris, true
 }
 
 func (c *Config) EnvVars() map[string]string {
