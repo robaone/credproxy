@@ -42,7 +42,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   proxy URL — hit 2026-09-28 when a Sep 25 service poisoned opencode's provider catalog fetches for days
 - Consider adding `no_proxy_hosts` config to avoid routing LLM traffic through proxy
 - Add `ca_file` option to `[databases.*]` wiring `RootCAs` for real TLS verification. Today mysql backend TLS encrypts without chain verification (InsecureSkipVerify mirrors go-sql-driver use_ssl=1 semantics), and mysql `verify_ca`/`verify_identity` are rejected at config validation so nobody accepts a silent downgrade (2026-10-02 review finding #2). PG `verify-full` IS genuinely implemented but needs the same ca_file to be usable against private CAs.
-- Investigate TLS "bad record MAC" on first `op read` (handshake timeout during 1Password auth prompt)
+- (Investigated) TLS "bad record MAC" on first `op read`: `op` inheriting proxy and CA environment variables from the parent shell was identified as a plausible mechanism for TLS corruption or handshake timeouts; addressed by sanitizing proxy and CA env vars when executing `op` in `internal/providers/onepassword.go`.
 
 ## Known Issues
 

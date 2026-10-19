@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/technopoetic/credproxy/internal/ca"
 	"github.com/technopoetic/credproxy/internal/config"
@@ -74,8 +75,8 @@ func main() {
 		cfg.AllowAll()
 	}
 
-	if err := cfg.ValidateDatabases(); err != nil {
-		fmt.Fprintf(os.Stderr, "invalid database config: %v\n", err)
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -91,11 +92,7 @@ func main() {
 	res := resolver.New(cfg, reg)
 	res.SetSentinel(*sentinel)
 
-	ttl, err := cfg.CacheTTLDuration()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid config: %v\n", err)
-		os.Exit(1)
-	}
+	ttl := cfg.CacheDuration()
 	res.SetCacheTTL(ttl)
 
 	if err := cfg.ResolveEnv(context.Background(), res); err != nil {
@@ -109,8 +106,8 @@ func main() {
 	}
 
 	if *prefetch {
-		if ttl != config.SessionCacheTTL {
-			fmt.Fprintf(os.Stderr, "warning: --prefetch without cache_ttl = \"session\": prefetched credentials expire after %s and will be re-read mid-run\n", ttl)
+		if ttl > 0 && ttl < 1*time.Hour {
+			fmt.Fprintf(os.Stderr, "warning: --prefetch without cache_ttl = \"session\": prefetched credentials will expire and be re-read mid-run\n")
 		}
 		if err := res.Prefetch(context.Background()); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to prefetch credentials: %v\n", err)

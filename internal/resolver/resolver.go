@@ -117,7 +117,7 @@ func (r *Resolver) ResolveRequest(req *http.Request, host string) error {
 
 func (r *Resolver) resolveURI(ctx context.Context, uri string) (string, error) {
 	r.mu.Lock()
-	if entry, ok := r.cache[uri]; ok && (r.ttl < 0 || time.Now().Before(entry.expires)) {
+	if entry, ok := r.cache[uri]; ok && (entry.expires.IsZero() || time.Now().Before(entry.expires)) {
 		r.mu.Unlock()
 		return entry.value, nil
 	}
@@ -129,7 +129,11 @@ func (r *Resolver) resolveURI(ctx context.Context, uri string) (string, error) {
 	}
 
 	r.mu.Lock()
-	r.cache[uri] = cacheEntry{value: val, expires: time.Now().Add(r.ttl)}
+	var expires time.Time
+	if r.ttl > 0 {
+		expires = time.Now().Add(r.ttl)
+	}
+	r.cache[uri] = cacheEntry{value: val, expires: expires}
 	r.mu.Unlock()
 	return val, nil
 }

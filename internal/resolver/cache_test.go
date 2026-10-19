@@ -49,17 +49,46 @@ func TestSessionCacheNeverExpires(t *testing.T) {
 	r.SetCacheTTL(config.SessionCacheTTL)
 
 	resolveOnce(t, r)
-	// Age the entry far past any finite TTL.
+
+	// Session entries should have a zero-time expiry.
 	r.mu.Lock()
-	for k, e := range r.cache {
-		e.expires = time.Now().Add(-24 * time.Hour)
-		r.cache[k] = e
+	for _, e := range r.cache {
+		if !e.expires.IsZero() {
+			t.Errorf("session cache entry expires = %v, want zero time", e.expires)
+		}
 	}
 	r.mu.Unlock()
+
 	resolveOnce(t, r)
 
 	if got := p.calls.Load(); got != 1 {
 		t.Errorf("provider calls = %d, want 1", got)
+	}
+}
+
+func TestSetCacheTTLSessionDoesNotResurrectExpired(t *testing.T) {
+	r, p := newTotalCountResolver(trelloHost(), trelloCreds)
+	r.SetCacheTTL(10 * time.Millisecond)
+
+	resolveOnce(t, r)
+	if got := p.calls.Load(); got != 1 {
+		t.Fatalf("first call = %d, want 1", got)
+	}
+
+	// Age entry past its finite TTL.
+	r.mu.Lock()
+	for k, e := range r.cache {
+		e.expires = time.Now().Add(-time.Second)
+		r.cache[k] = e
+	}
+	r.mu.Unlock()
+
+	// Switch to session TTL; previously expired entry must not be resurrected.
+	r.SetCacheTTL(config.SessionCacheTTL)
+	resolveOnce(t, r)
+
+	if got := p.calls.Load(); got != 2 {
+		t.Errorf("provider calls = %d, want 2 (expired entry should re-resolve, not resurrect)", got)
 	}
 }
 

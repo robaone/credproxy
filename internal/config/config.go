@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -57,12 +58,13 @@ type Config struct {
 	// CacheTTL is how long a resolved credential stays cached: a Go duration
 	// ("10m"), or "session" to keep it for the life of the proxy. Empty means
 	// DefaultCacheTTL.
-	CacheTTL  string                    `toml:"cache_ttl"`
-	Env       map[string]string         `toml:"env"`
-	Hosts     map[string]HostConfig     `toml:"hosts"`
-	Databases map[string]DatabaseConfig `toml:"databases"`
-	Profiles  map[string]ProfileConfig  `toml:"profiles"`
-	hostsSet  map[string]bool
+	CacheTTL    string                    `toml:"cache_ttl"`
+	cacheTTLDur time.Duration
+	Env         map[string]string         `toml:"env"`
+	Hosts       map[string]HostConfig     `toml:"hosts"`
+	Databases   map[string]DatabaseConfig `toml:"databases"`
+	Profiles    map[string]ProfileConfig  `toml:"profiles"`
+	hostsSet    map[string]bool
 }
 
 // DefaultCacheTTL applies when cache_ttl is not set.
@@ -87,6 +89,19 @@ func (c *Config) CacheTTLDuration() (time.Duration, error) {
 		return 0, fmt.Errorf("cache_ttl %q must be positive", c.CacheTTL)
 	}
 	return d, nil
+}
+
+// CacheDuration returns the validated cache TTL duration.
+// If Validate has not been called, it falls back to CacheTTLDuration or DefaultCacheTTL.
+func (c *Config) CacheDuration() time.Duration {
+	if c.cacheTTLDur != 0 {
+		return c.cacheTTLDur
+	}
+	dur, err := c.CacheTTLDuration()
+	if err != nil {
+		return DefaultCacheTTL
+	}
+	return dur
 }
 
 // AllCredentialURIs returns every distinct credential URI configured on any
@@ -445,6 +460,72 @@ func (c *Config) ValidateDatabases() error {
 		if err := validateParams(db.Engine, db.Params); err != nil {
 			errs = append(errs, fmt.Errorf("database %q: %v", name, err))
 		}
+	}
+	return errors.Join(errs...)
+}
+
+var validSentinelName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+func validateHostCredentials(host string, credentials map[string]string, prefix string) []error {
+	var errs []error
+	names := make([]string, 0, len(credentials))
+	for n := range credentials {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		if !validSentinelName.MatchString(n) {
+			errs = append(errs, fmt.Errorf("%shost %q: credential name %q must match ^[A-Za-z0-9_-]+$", prefix, host, n))
+		}
+	}
+	return errs
+}
+
+// ValidateCredentials checks every [hosts.<host>.credentials] entry: names must
+// match ^[A-Za-z0-9_-]+$ to ensure they are matchable by sentinels.
+func (c *Config) ValidateCredentials() error {
+	var errs []error
+	hosts := make([]string, 0, len(c.Hosts))
+	for h := range c.Hosts {
+		hosts = append(hosts, h)
+	}
+	sort.Strings(hosts)
+	for _, h := range hosts {
+		errs = append(errs, validateHostCredentials(h, c.Hosts[h].Credentials, "")...)
+	}
+	profNames := make([]string, 0, len(c.Profiles))
+	for p := range c.Profiles {
+		profNames = append(profNames, p)
+	}
+	sort.Strings(profNames)
+	for _, p := range profNames {
+		prof := c.Profiles[p]
+		pHosts := make([]string, 0, len(prof.Hosts))
+		for h := range prof.Hosts {
+			pHosts = append(pHosts, h)
+		}
+		sort.Strings(pHosts)
+		for _, h := range pHosts {
+			errs = append(errs, validateHostCredentials(h, prof.Hosts[h].Credentials, fmt.Sprintf("profile %q ", p))...)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Validate validates all configuration: databases, credential names, and cache_ttl.
+func (c *Config) Validate() error {
+	var errs []error
+	if err := c.ValidateDatabases(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := c.ValidateCredentials(); err != nil {
+		errs = append(errs, err)
+	}
+	dur, err := c.CacheTTLDuration()
+	if err != nil {
+		errs = append(errs, err)
+	} else {
+		c.cacheTTLDur = dur
 	}
 	return errors.Join(errs...)
 }

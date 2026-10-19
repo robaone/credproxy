@@ -28,7 +28,7 @@ $ credproxy opencode
 
 credproxy is the parent process. It loads config, starts the proxy, configures the child's environment, runs the agent, and cleans up on exit. No manual env vars, no port management. When the child exits, the proxy dies with it — real credentials only exist in credproxy's memory, for the lifetime of the session.
 
-The sentinel is substituted in headers, query strings, and request bodies. The agent doesn't know which credential goes where — it uses `CREDPROXY_TOKEN` for everything, and credproxy resolves the right secret based on the target host.
+The sentinel is substituted in headers, query strings, and request bodies. The agent never sees credential *values*. When a host needs a single credential, credproxy resolves the right secret based on the target host and the agent uses `CREDPROXY_TOKEN` for everything. Disambiguating between multiple credentials on one host is the one thing it must be told.
 
 When one host needs more than one secret in a session, declare named credentials alongside the default and reference them with `CREDPROXY_TOKEN:<name>`:
 
@@ -42,6 +42,8 @@ agent-token = "op://Work/trello-agent-token/value"     # CREDPROXY_TOKEN:agent-t
 ```
 
 Names are `[A-Za-z0-9_-]+`. A reference to a name that isn't configured for that host fails the request with a 502 instead of sending the sentinel upstream. Credentials are resolved on first use, so an unused named credential never triggers a 1Password prompt.
+
+Note on config cascades: `[hosts.*]` entries are whole-entry replacements during cascading merges (global config + the nearest `.credproxy.toml`). A project-level overlay that adds one named credential to a host configured globally replaces that host's entire entry from global config — dropping the global default credential and any other named credentials for that host unless they are also declared in the project overlay. If a dropped default is referenced, the bare sentinel returns a 502 error ("no default credential configured").
 
 ### Credential cache and prefetch
 
@@ -59,7 +61,7 @@ To move the prompts to startup, add `--prefetch`:
 credproxy --prefetch ./start_daemon.sh
 ```
 
-credproxy then resolves every configured host credential, default and named, one at a time before starting the child, and exits with an error if any fails. Prefetch warns if `cache_ttl` is not `session`, because prefetched values would expire mid-run. Database passwords and `[env]` values are already resolved at startup.
+credproxy then resolves every configured host credential, default and named, one at a time before starting the child, and exits with an error if any fails. Prefetch warns if `cache_ttl` is a short finite duration (less than 1 hour), because prefetched values would expire mid-run. Database passwords and `[env]` values are already resolved at startup.
 
 ## Configuration
 
@@ -265,6 +267,12 @@ This is not a bug — the resolver is doing exactly what it's designed to do. Bu
 ### Zero introspection surface
 
 credproxy has no management API, no status endpoints, no CLI output containing real secrets, and no `/resolve` endpoint. The agent can send traffic through credproxy, but it cannot *ask* credproxy for secrets.
+
+### Provider environment sanitation
+
+When resolving `op://` URIs, credproxy executes the `op` CLI with a sanitized environment that strips proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`) and custom CA certificate bundles (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`). This ensures that 1Password CLI API traffic routes directly to 1Password rather than passing through an active proxy or trusting custom certificates.
+
+*Tradeoff:* Stripping `SSL_CERT_FILE` will cause `op` to fail TLS verification if it must operate behind an enterprise TLS-inspecting proxy that requires a corporate root certificate.
 
 ## Project Structure
 
