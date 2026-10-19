@@ -239,15 +239,23 @@ func (s *substitution) body(req *http.Request) error {
 	return nil
 }
 
-// expand replaces every sentinel occurrence in in. An unknown name fails the
-// whole request rather than letting the sentinel pass upstream unexpanded.
+// expand replaces every sentinel occurrence in in. A request fails rather than
+// letting a sentinel pass upstream unexpanded when no credential applies.
 func (s *substitution) expand(in string) (string, error) {
 	var b strings.Builder
 	last := 0
 	for _, m := range s.r.re.FindAllStringSubmatchIndex(in, -1) {
 		name := ""
+		end := m[1]
 		if m[2] >= 0 {
 			name = in[m[2]:m[3]]
+			// A ":word" suffix is a credential name only when configured for
+			// the host. Otherwise it is literal text that follows the default
+			// sentinel, e.g. Basic auth "CREDPROXY_TOKEN:x-oauth-basic".
+			if _, ok := s.uris[name]; !ok {
+				name = ""
+				end = m[2] - 1
+			}
 		}
 		cred, err := s.lookup(name)
 		if err != nil {
@@ -255,7 +263,7 @@ func (s *substitution) expand(in string) (string, error) {
 		}
 		b.WriteString(in[last:m[0]])
 		b.WriteString(cred)
-		last = m[1]
+		last = end
 	}
 	b.WriteString(in[last:])
 	return b.String(), nil

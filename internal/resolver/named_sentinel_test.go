@@ -96,19 +96,44 @@ func TestBareSentinelUsesDefaultWhenNamedCredentialsExist(t *testing.T) {
 	}
 }
 
-func TestUnknownNamedSentinelFailsClosed(t *testing.T) {
+func TestUnconfiguredSuffixIsLiteralAfterDefault(t *testing.T) {
 	r := newNamedTestResolver(trelloHost(), trelloCreds)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/boards?token=CREDPROXY_TOKEN:nope", nil)
-	err := r.ResolveRequest(req, "api.trello.com")
-	if err == nil {
-		t.Fatal("expected error for unconfigured credential name")
+	if err := r.ResolveRequest(req, "api.trello.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), `"nope" not configured`) {
-		t.Errorf("unexpected error: %v", err)
+	if want := "token=key-value:nope"; req.URL.RawQuery != want {
+		t.Errorf("query = %q, want %q", req.URL.RawQuery, want)
 	}
-	if strings.Contains(req.URL.RawQuery, "key-value") {
-		t.Errorf("request modified despite error: %q", req.URL.RawQuery)
+}
+
+func TestUnconfiguredSuffixWithoutDefaultFailsClosed(t *testing.T) {
+	hc := config.HostConfig{Credentials: map[string]string{"token": "mock://trello/token"}}
+	r := newNamedTestResolver(hc, trelloCreds)
+
+	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/boards?token=CREDPROXY_TOKEN:nope", nil)
+	if err := r.ResolveRequest(req, "api.trello.com"); err == nil {
+		t.Fatal("expected error when no default credential exists")
+	}
+}
+
+func TestBasicAuthFixedPasswordKeepsDefaultCredential(t *testing.T) {
+	r := newNamedTestResolver(trelloHost(), trelloCreds)
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("CREDPROXY_TOKEN:x-oauth-basic"))
+	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/members/me", nil)
+	req.Header.Set("Authorization", "Basic "+encoded)
+	if err := r.ResolveRequest(req, "api.trello.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(req.Header.Get("Authorization"), "Basic "))
+	if err != nil {
+		t.Fatalf("decoding header: %v", err)
+	}
+	if string(decoded) != "key-value:x-oauth-basic" {
+		t.Errorf("basic auth = %q, want %q", decoded, "key-value:x-oauth-basic")
 	}
 }
 
@@ -120,8 +145,11 @@ func TestNamedSentinelPrefixCollisionMatchesLongestName(t *testing.T) {
 	r := newNamedTestResolver(hc, trelloCreds)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/boards?token=CREDPROXY_TOKEN:token2", nil)
-	if err := r.ResolveRequest(req, "api.trello.com"); err == nil {
-		t.Fatal("token2 must not be treated as token plus a suffix")
+	if err := r.ResolveRequest(req, "api.trello.com"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "token=key-value:token2"; req.URL.RawQuery != want {
+		t.Errorf("query = %q, want %q (token2 must not match token)", req.URL.RawQuery, want)
 	}
 }
 
