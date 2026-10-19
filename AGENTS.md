@@ -26,6 +26,9 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
 - `--version` flag driven by `runtime/debug.ReadBuildInfo()` — tagged `go install` builds report the tag, local builds report a pseudo-version (`vX.Y.Z-0.<ts>-<sha>`, `+dirty` when applicable). No hardcoded version constant anywhere; cutting a new release is just tagging on a clean tree.
 - Docs split: README.md is the simple entrypoint (what/why/quickstart/anti-patterns); ADVANCED.md holds internals + full configuration reference. User-facing doc changes to advanced features go in ADVANCED.md, not README.
+- Named sentinels: `CREDPROXY_TOKEN:<name>` selects `[hosts."<host>".credentials].<name>`; names are `[A-Za-z0-9_-]+`, validated at startup by `Config.Validate()`. An unconfigured `:suffix` is literal text after the default credential (keeps Basic auth `TOKEN:x-oauth-basic` working); with no default credential the request fails closed with a 502.
+- Credential cache keyed by `op://` URI (not host): `cache_ttl` (default `5m`, a duration, or `session` stored as a zero-time expiry). `--prefetch` resolves every configured host credential sequentially at startup and exits on the first failure.
+- `op` provider runs with proxy and custom CA env vars (`HTTPS_PROXY`, `SSL_CERT_FILE`, etc.) stripped, so it does not route through credproxy or a stale trust bundle. Trade-off: `op` cannot use a corporate TLS-inspecting proxy that needs a custom root.
 - DB credential isolation: `[databases.*]` config entries start embedded
   auth-split relays at wrap time (in-process, no external binaries or
   containers); child gets a localhost-only URL with a random per-session
@@ -71,6 +74,10 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 
 - First `op read` call can cause TLS handshake timeout if 1Password auth prompt takes >30s. The credential caches after first resolution, so subsequent requests work.
 - 1Password biometric prompt shows "tmux" (not "credproxy-op") when running inside tmux — 1Password reads the controlling terminal, not argv[0]
+- Named sentinel typos fall through to the default credential: `CREDPROXY_TOKEN:<typo>` sends the default secret plus `:<typo>` upstream (upstream 401, not a credproxy error). Accepted trade-off for Basic auth fixed-password compatibility.
+- Percent-encoded colons (`CREDPROXY_TOKEN%3Aname`) are not matched as named sentinels; the default credential is substituted and `%3Aname` passes through. Clients that URL-encode query/form values hit this.
+- Resolved values are inserted raw (no URL encoding); secrets with reserved characters corrupt query strings and form bodies.
+- `--prefetch` resolves every host in the merged config, including hosts unused by this run; `[env]` resolution bypasses the credential cache, so a secret used in both is read twice.
 - Logs go to `~/.config/credproxy/credproxy.log`, not stderr (avoids TUI ghosting)
 - Same-host LLM conflict: when the LLM provider host is also a configured credential host, credproxy substitutes the sentinel in the system prompt body on its way to the LLM, exposing the real credential. Mitigation: use a different LLM provider than the credential host. Documented in README (short form) and ADVANCED.md (full explanation). README is the simple entrypoint; ADVANCED.md holds advanced configuration and internals.
 
@@ -87,7 +94,7 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 ## Architecture
 
 - `internal/config/` — Host-keyed config with cascading merge. Merge is exactly two layers: global + the single NEAREST `.credproxy.toml` walking up from cwd (no directory-chain cascade). `[env]` merges per-key; `[hosts.*]` and `[databases.*]` entries are whole-entry replacement (nearer scope wins the entire entry, fields never mix — enforced by validation requiring all fields)
-- `internal/resolver/` — Sentinel matching in headers, body, and query strings
+- `internal/resolver/` — Sentinel and named-sentinel matching in headers (incl. base64 Basic auth), body, and query strings; URI-keyed credential cache and prefetch
 - `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
 - `internal/providers/` — 1Password CLI provider (op read)
 - `internal/dbrelay/` — Session relay lifecycle and child env computation
@@ -103,4 +110,4 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 
 ## Sentinel
 
-Default: `CREDPROXY_TOKEN`. No markdown syntax characters. Configurable via `--sentinel` flag.
+Default: `CREDPROXY_TOKEN`. No markdown syntax characters. Configurable via `--sentinel` flag. Optional `:<name>` suffix selects a named credential when `<name>` is configured for the host; otherwise the suffix is literal text.
