@@ -96,8 +96,12 @@ func TestBareSentinelUsesDefaultWhenNamedCredentialsExist(t *testing.T) {
 	}
 }
 
-func TestUnconfiguredSuffixIsLiteralAfterDefault(t *testing.T) {
-	r := newNamedTestResolver(trelloHost(), trelloCreds)
+func defaultOnlyHost() config.HostConfig {
+	return config.HostConfig{Credential: "mock://trello/key"}
+}
+
+func TestUnconfiguredSuffixIsLiteralOnHostWithoutNamedCredentials(t *testing.T) {
+	r := newNamedTestResolver(defaultOnlyHost(), trelloCreds)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/boards?token=CREDPROXY_TOKEN:nope", nil)
 	if err := r.ResolveRequest(req, "api.trello.com"); err != nil {
@@ -105,6 +109,23 @@ func TestUnconfiguredSuffixIsLiteralAfterDefault(t *testing.T) {
 	}
 	if want := "token=key-value:nope"; req.URL.RawQuery != want {
 		t.Errorf("query = %q, want %q", req.URL.RawQuery, want)
+	}
+}
+
+func TestUnmatchedNameOnHostWithNamedCredentialsFailsClosed(t *testing.T) {
+	calls := map[string]int{}
+	cfg := &config.Config{Hosts: map[string]config.HostConfig{"api.trello.com": trelloHost()}}
+	cfg.SetDefaults()
+	reg := providers.NewRegistry()
+	reg.Register(&countingProvider{mockProvider: mockProvider{resolved: trelloCreds}, calls: calls})
+	r := New(cfg, reg)
+
+	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/boards?token=CREDPROXY_TOKEN:agent_tokn", nil)
+	if err := r.ResolveRequest(req, "api.trello.com"); err == nil {
+		t.Fatal("expected error for unmatched name on a host with named credentials")
+	}
+	if calls["mock://trello/key"] != 0 {
+		t.Errorf("default credential resolved %d times, want 0", calls["mock://trello/key"])
 	}
 }
 
@@ -119,7 +140,7 @@ func TestUnconfiguredSuffixWithoutDefaultFailsClosed(t *testing.T) {
 }
 
 func TestBasicAuthFixedPasswordKeepsDefaultCredential(t *testing.T) {
-	r := newNamedTestResolver(trelloHost(), trelloCreds)
+	r := newNamedTestResolver(defaultOnlyHost(), trelloCreds)
 
 	encoded := base64.StdEncoding.EncodeToString([]byte("CREDPROXY_TOKEN:x-oauth-basic"))
 	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/members/me", nil)
@@ -145,11 +166,8 @@ func TestNamedSentinelPrefixCollisionMatchesLongestName(t *testing.T) {
 	r := newNamedTestResolver(hc, trelloCreds)
 
 	req := httptest.NewRequest(http.MethodGet, "https://api.trello.com/1/boards?token=CREDPROXY_TOKEN:token2", nil)
-	if err := r.ResolveRequest(req, "api.trello.com"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if want := "token=key-value:token2"; req.URL.RawQuery != want {
-		t.Errorf("query = %q, want %q (token2 must not match token)", req.URL.RawQuery, want)
+	if err := r.ResolveRequest(req, "api.trello.com"); err == nil {
+		t.Fatalf("expected error, got query %q (token2 must not match token)", req.URL.RawQuery)
 	}
 }
 

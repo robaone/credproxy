@@ -26,7 +26,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
 - `--version` flag driven by `runtime/debug.ReadBuildInfo()` — tagged `go install` builds report the tag, local builds report a pseudo-version (`vX.Y.Z-0.<ts>-<sha>`, `+dirty` when applicable). No hardcoded version constant anywhere; cutting a new release is just tagging on a clean tree.
 - Docs split: README.md is the simple entrypoint (what/why/quickstart/anti-patterns); ADVANCED.md holds internals + full configuration reference. User-facing doc changes to advanced features go in ADVANCED.md, not README.
-- Named sentinels: `CREDPROXY_TOKEN:<name>` selects `[hosts."<host>".credentials].<name>`; names are `[A-Za-z0-9_-]+`, validated at startup by `Config.Validate()`. An unconfigured `:suffix` is literal text after the default credential (keeps Basic auth `TOKEN:x-oauth-basic` working); with no default credential the request fails closed with a 502.
+- Named sentinels: `CREDPROXY_TOKEN:<name>` selects `[hosts."<host>".credentials].<name>`; names are `[A-Za-z0-9_-]+`, validated at startup by `Config.Validate()`. On a host with named credentials, an unmatched `:suffix` fails closed with a 502. On a host without named credentials, the suffix is literal text after the default credential (keeps Basic auth `TOKEN:x-oauth-basic` working); with no default credential either, the request fails closed.
 - Credential cache keyed by `op://` URI (not host): `cache_ttl` (default `5m`, a duration, or `session` stored as a zero-time expiry). `--prefetch` resolves every configured host credential sequentially at startup and exits on the first failure.
 - `op` provider runs with proxy and custom CA env vars (`HTTPS_PROXY`, `SSL_CERT_FILE`, etc.) stripped, so it does not route through credproxy or a stale trust bundle. Trade-off: `op` cannot use a corporate TLS-inspecting proxy that needs a custom root.
 - DB credential isolation: `[databases.*]` config entries start embedded
@@ -74,7 +74,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 
 - First `op read` call can cause TLS handshake timeout if 1Password auth prompt takes >30s. The credential caches after first resolution, so subsequent requests work.
 - 1Password biometric prompt shows "tmux" (not "credproxy-op") when running inside tmux — 1Password reads the controlling terminal, not argv[0]
-- Named sentinel typos fall through to the default credential: `CREDPROXY_TOKEN:<typo>` sends the default secret plus `:<typo>` upstream (upstream 401, not a credproxy error). Accepted trade-off for Basic auth fixed-password compatibility.
+- Hosts with named credentials can't use a fixed Basic-auth password suffix (`TOKEN:x-oauth-basic`): the unmatched suffix fails closed. Fixed-password hosts must not configure named credentials.
 - Percent-encoded colons (`CREDPROXY_TOKEN%3Aname`) are not matched as named sentinels; the default credential is substituted and `%3Aname` passes through. Clients that URL-encode query/form values hit this.
 - Resolved values are inserted raw (no URL encoding); secrets with reserved characters corrupt query strings and form bodies.
 - `--prefetch` resolves every host in the merged config, including hosts unused by this run; `[env]` resolution bypasses the credential cache, so a secret used in both is read twice.
@@ -110,4 +110,4 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 
 ## Sentinel
 
-Default: `CREDPROXY_TOKEN`. No markdown syntax characters. Configurable via `--sentinel` flag. Optional `:<name>` suffix selects a named credential when `<name>` is configured for the host; otherwise the suffix is literal text.
+Default: `CREDPROXY_TOKEN`. No markdown syntax characters. Configurable via `--sentinel` flag. Optional `:<name>` suffix selects a named credential when `<name>` is configured for the host. An unmatched suffix fails closed on hosts with named credentials and is literal text on hosts without them.

@@ -38,7 +38,7 @@ sudo update-ca-certificates
 
    The host key is the exact hostname from the URL — no scheme, no port, no path.
 
-   If one host needs more than one secret (for example Trello's key and token), add named credentials and reference them as `CREDPROXY_TOKEN:<name>`. Read the [named sentinel warnings](ADVANCED.md#named-sentinel-warnings) first: a misspelled name sends the host's default credential instead of failing.
+   If one host needs more than one secret (for example Trello's key and token), add named credentials and reference them as `CREDPROXY_TOKEN:<name>`. Read the [named sentinel warnings](ADVANCED.md#named-sentinel-warnings) first: a misspelled name fails the request, and a URL-encoded colon (`%3A`) sends the default credential.
 
 2. Wrap your agent:
 
@@ -94,7 +94,7 @@ HTTP isn't the only leak. credproxy also keeps database passwords out of the age
 - **It's not a sandbox.** The agent can still read files, run commands, and reach the network. credproxy is credential isolation, not execution isolation — the two are complementary.
 - **It doesn't prevent misuse, only theft.** A compromised agent can still make authenticated API calls to your configured hosts. Use least-privilege credentials (read-only tokens, restricted keys) to limit the blast radius.
 - **Don't point your LLM provider at a configured host.** If your agent's LLM API and a credentialed host are the same hostname, credproxy substitutes the sentinel in the request body — including your agent instructions — and the real key lands in the agent's context. Use a different LLM provider for that session.
-- **A misspelled named sentinel doesn't fail closed.** `CREDPROXY_TOKEN:<typo>` sends the host's default credential with `:<typo>` appended, and you see an upstream 401 rather than a credproxy error. Details in [ADVANCED.md](ADVANCED.md#named-sentinel-warnings).
+- **A URL-encoded named sentinel doesn't fail closed.** `CREDPROXY_TOKEN%3A<name>` is read as the bare sentinel, so the host's default credential is sent with `%3A<name>` appended. Details in [ADVANCED.md](ADVANCED.md#named-sentinel-warnings).
 - **Don't put real secrets in `[env]`.** credproxy can resolve `op://` URIs into env vars at startup, but then the real credential lives in the child process's environment. That's there for tools that genuinely need it — not the default path. Database credentials in particular should go through the built-in relays instead (see [ADVANCED.md](ADVANCED.md)).
 
 ## More

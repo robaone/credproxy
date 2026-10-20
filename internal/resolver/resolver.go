@@ -249,10 +249,12 @@ func (s *substitution) expand(in string) (string, error) {
 		end := m[1]
 		if m[2] >= 0 {
 			name = in[m[2]:m[3]]
-			// A ":word" suffix is a credential name only when configured for
-			// the host. Otherwise it is literal text that follows the default
-			// sentinel, e.g. Basic auth "CREDPROXY_TOKEN:x-oauth-basic".
-			if _, ok := s.uris[name]; !ok {
+			// On a host with no named credentials, an unknown ":word" suffix is
+			// literal text after the default sentinel, e.g. Basic auth
+			// "CREDPROXY_TOKEN:x-oauth-basic". On a host with named credentials
+			// it fails closed in lookup, so a typo or a name dropped by a config
+			// overlay never sends the default credential under the wrong identity.
+			if _, ok := s.uris[name]; !ok && !s.hasNamedCredentials() {
 				name = ""
 				end = m[2] - 1
 			}
@@ -267,6 +269,16 @@ func (s *substitution) expand(in string) (string, error) {
 	}
 	b.WriteString(in[last:])
 	return b.String(), nil
+}
+
+// hasNamedCredentials reports whether the host configures any credential
+// besides the default, which is keyed by "".
+func (s *substitution) hasNamedCredentials() bool {
+	_, hasDefault := s.uris[""]
+	if hasDefault {
+		return len(s.uris) > 1
+	}
+	return len(s.uris) > 0
 }
 
 func (s *substitution) lookup(name string) (string, error) {
