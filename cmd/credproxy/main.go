@@ -107,7 +107,7 @@ func main() {
 
 	if *prefetch {
 		if ttl > 0 && ttl < 1*time.Hour {
-			fmt.Fprintf(os.Stderr, "warning: --prefetch without cache_ttl = \"session\": prefetched credentials will expire and be re-read mid-run\n")
+			fmt.Fprintf(os.Stderr, "warning: cache_ttl is under 1h; prefetched credentials will expire and be re-read mid-run\n")
 		}
 		if err := res.Prefetch(context.Background()); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to prefetch credentials: %v\n", err)

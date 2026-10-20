@@ -58,7 +58,7 @@ type Config struct {
 	// CacheTTL is how long a resolved credential stays cached: a Go duration
 	// ("10m"), or "session" to keep it for the life of the proxy. Empty means
 	// DefaultCacheTTL.
-	CacheTTL    string                    `toml:"cache_ttl"`
+	CacheTTL    string `toml:"cache_ttl"`
 	cacheTTLDur time.Duration
 	Env         map[string]string         `toml:"env"`
 	Hosts       map[string]HostConfig     `toml:"hosts"`
