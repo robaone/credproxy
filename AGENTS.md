@@ -10,7 +10,7 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - Env var injection from config (`[env]` and `[profiles.<name>.env]`)
 - `op://` URI resolution in env values at startup (resolves concurrently, 30s per-call timeout, fail-fast on error)
 - TLS tunneling for unconfigured hosts (CONNECT) and forward-proxy path (absolute URI) with HTTPS scheme preservation
-- Query string, header, and body substitution
+- Query string and header substitution (request bodies are never substituted: a sentinel in a body is forwarded as literal text)
 - CA cert env vars injected (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE), pointed at
   `trust-bundle.pem` — credproxy's CA cert followed by a vendored public root bundle (`internal/ca/mozilla-bundle.pem`),
   regenerated on every run via `Provider.WriteTrustBundle`. Fixes tools (gcloud, uv, HF Hub) that treat these vars as a
@@ -26,6 +26,9 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 - First-run scaffolding: creates `~/.config/credproxy/`, writes example config if none exists, touches log file (fixes crash on fresh install where log OpenFile ran before dir existed)
 - `--version` flag driven by `runtime/debug.ReadBuildInfo()` — tagged `go install` builds report the tag, local builds report a pseudo-version (`vX.Y.Z-0.<ts>-<sha>`, `+dirty` when applicable). No hardcoded version constant anywhere; cutting a new release is just tagging on a clean tree.
 - Docs split: README.md is the simple entrypoint (what/why/quickstart/anti-patterns); ADVANCED.md holds internals + full configuration reference. User-facing doc changes to advanced features go in ADVANCED.md, not README.
+- Named sentinels: `CREDPROXY_TOKEN:<name>` selects `[hosts."<host>".credentials].<name>`; names are `[A-Za-z0-9_-]+`, validated at startup by `Config.Validate()`. On a host with named credentials, an unmatched `:suffix` fails closed with a 502. On a host without named credentials, the suffix is literal text after the default credential (keeps Basic auth `TOKEN:x-oauth-basic` working); with no default credential either, the request fails closed.
+- Credential cache keyed by `op://` URI (not host): `cache_ttl` (default `5m`, a duration, or `session` stored as a zero-time expiry). `--prefetch` resolves every configured host credential sequentially at startup and exits on the first failure.
+- `op` provider runs with proxy and custom CA env vars (`HTTPS_PROXY`, `SSL_CERT_FILE`, etc.) stripped, so it does not route through credproxy or a stale trust bundle. Trade-off: `op` cannot use a corporate TLS-inspecting proxy that needs a custom root.
 - DB credential isolation: `[databases.*]` config entries start embedded
   auth-split relays at wrap time (in-process, no external binaries or
   containers); child gets a localhost-only URL with a random per-session
@@ -42,7 +45,9 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
   proxy URL — hit 2026-09-28 when a Sep 25 service poisoned opencode's provider catalog fetches for days
 - Consider adding `no_proxy_hosts` config to avoid routing LLM traffic through proxy
 - Add `ca_file` option to `[databases.*]` wiring `RootCAs` for real TLS verification. Today mysql backend TLS encrypts without chain verification (InsecureSkipVerify mirrors go-sql-driver use_ssl=1 semantics), and mysql `verify_ca`/`verify_identity` are rejected at config validation so nobody accepts a silent downgrade (2026-10-02 review finding #2). PG `verify-full` IS genuinely implemented but needs the same ca_file to be usable against private CAs.
-- Investigate TLS "bad record MAC" on first `op read` (handshake timeout during 1Password auth prompt)
+- (Investigated) TLS "bad record MAC" on first `op read`: `op` inheriting proxy and CA environment variables from the parent shell was identified as a plausible mechanism for TLS corruption or handshake timeouts; addressed by sanitizing proxy and CA env vars when executing `op` in `internal/providers/onepassword.go`.
+- Add kernel-level egress enforcement of the wrapped child: Landlock (Linux; ABI v4 network filtering needs kernel 6.7+) and Seatbelt (macOS). Closes the documented gap where a child ignoring `HTTPS_PROXY` reaches a real host un-intercepted. Landlock ABI v4 filters by *port*, not destination — the kernel forces traffic through credproxy's port; host allowlisting stays in the MITM layer. macOS sharp edge: Go binaries (`gh`, `terraform`) ignore `SSL_CERT_FILE` and verify via `com.apple.trustd`, so MITM CA trust needs a keychain path (see nono's `--trust-proxy-ca`), not just env injection.
+- (Decided 2026-10-29) Per-session rotating sentinel tokens evaluated and rejected — nono's phantom-token model is security theater against the prompt-injection threat model: the agent legitimately holds whatever string opens the injection route, so entropy/scoping buys nothing. The real boundary is destination allowlisting + inability to bypass the proxy. Revisit only if credproxy grows a localhost injection endpoint (other same-user processes could use it as an oracle) or a multi-agent mode (per-agent revocation/attribution).
 
 ## Known Issues
 
@@ -71,8 +76,11 @@ v2 core implementation complete and live-tested. Tagged v0.1.0:
 
 - First `op read` call can cause TLS handshake timeout if 1Password auth prompt takes >30s. The credential caches after first resolution, so subsequent requests work.
 - 1Password biometric prompt shows "tmux" (not "credproxy-op") when running inside tmux — 1Password reads the controlling terminal, not argv[0]
+- Hosts with named credentials can't use a fixed Basic-auth password suffix (`TOKEN:x-oauth-basic`): the unmatched suffix fails closed. Fixed-password hosts must not configure named credentials.
+- Percent-encoded colons (`CREDPROXY_TOKEN%3Aname`) are not matched as named sentinels; the default credential is substituted and `%3Aname` passes through. Clients that URL-encode query/form values hit this.
+- Resolved values are inserted raw (no URL encoding); secrets with reserved characters corrupt query strings and form bodies.
+- `--prefetch` resolves every host in the merged config, including hosts unused by this run; `[env]` resolution bypasses the credential cache, so a secret used in both is read twice.
 - Logs go to `~/.config/credproxy/credproxy.log`, not stderr (avoids TUI ghosting)
-- Same-host LLM conflict: when the LLM provider host is also a configured credential host, credproxy substitutes the sentinel in the system prompt body on its way to the LLM, exposing the real credential. Mitigation: use a different LLM provider than the credential host. Documented in README (short form) and ADVANCED.md (full explanation). README is the simple entrypoint; ADVANCED.md holds advanced configuration and internals.
 
 ## How to Build & Test
 
@@ -87,7 +95,7 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 ## Architecture
 
 - `internal/config/` — Host-keyed config with cascading merge. Merge is exactly two layers: global + the single NEAREST `.credproxy.toml` walking up from cwd (no directory-chain cascade). `[env]` merges per-key; `[hosts.*]` and `[databases.*]` entries are whole-entry replacement (nearer scope wins the entire entry, fields never mix — enforced by validation requiring all fields)
-- `internal/resolver/` — Sentinel matching in headers, body, and query strings
+- `internal/resolver/` — Sentinel and named-sentinel matching in headers (incl. base64 Basic auth) and query strings; URI-keyed credential cache and prefetch
 - `internal/mitm/` — MITM proxy for configured hosts, plain tunnel for unconfigured hosts, forward-proxy for absolute-URI requests
 - `internal/providers/` — 1Password CLI provider (op read)
 - `internal/dbrelay/` — Session relay lifecycle and child env computation
@@ -103,4 +111,4 @@ go install ./cmd/credproxy/  # install to ~/go/bin/credproxy
 
 ## Sentinel
 
-Default: `CREDPROXY_TOKEN`. No markdown syntax characters. Configurable via `--sentinel` flag.
+Default: `CREDPROXY_TOKEN`. No markdown syntax characters. Configurable via `--sentinel` flag. Optional `:<name>` suffix selects a named credential when `<name>` is configured for the host. An unmatched suffix fails closed on hosts with named credentials and is literal text on hosts without them.
